@@ -1,17 +1,11 @@
-import os
-from dotenv import load_dotenv
 import ostc
-from openai import OpenAI
-import json
-from datetime import datetime
-
-load_dotenv()
-
-actions = ["Get the result of multiplying 4 and 6 then scheduling a meeting with Johan to dicuss the results."]
+import config as cfg
 
 
-model = OpenAI(base_url="https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-70B-Instruct/v1/", api_key=os.environ.get("HF_TOKEN"))
+actions = ["Get the result of multiplying 4 and 6 then scheduling a meeting with Johan at a date and time of your choice. Next, tell me a fact about penguins."]
 
+
+model = cfg.llm
 
 def multiply(a: int, b: int) -> int:
     """Multiply two integers and returns the result integer"""
@@ -21,7 +15,10 @@ def multiply(a: int, b: int) -> int:
 
 def create_meeting(attendee, time, description=None):
     
-    print(f"Scheduled a meeting with {attendee} at {time}. {description}")
+    print(f"Scheduled a meeting with {attendee} at {time}.")
+
+def chat_response(response: str):
+    print(response)
 
 tools = [
         { 
@@ -63,38 +60,60 @@ tools = [
                 ]
             },
         },
+        {
+            "name": "chat_response",
+            "description": (
+                "Use chat responses if a conversation is appropriate instead of a function."
+        ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "response": {
+                        "type": "string",
+                        "description": "Standard chat response.",
+                    },
+                },
+                "required": ["response"],
+        },
+}
 ]
-multiply_tool = next(tool for tool in tools if tool["name"] == "multiply")
-create_meeting_tool = next(tool for tool in tools if tool["name"] == "create_meeting")
+multiply_tool = next((tool for tool in tools if tool["name"] == "multiply"), None)
+create_meeting_tool = next((tool for tool in tools if tool["name"] == "create_meeting"), None)
+chat_response_tool = next((tool for tool in tools if tool["name"] == "chat_response"), None)
 
 functions = {
     "multiply": multiply,
     "create_meeting": create_meeting,
+    "chat_response": chat_response
+
 }
 
-agent = ostc.AgentCreator(name="tool_user", tools=[multiply_tool],  description="Can use multiply tool to multiply two integers")
-meeting_agent = ostc.AgentCreator(name="meeting_agent", tools=[create_meeting_tool],  description="Can use create_meeting tool to schedule a meeting")
-extra_agent = ostc.AgentCreator(name="can't use tools", tools=[],  description="Can't use any tools")
+agent_creators = [
+    ostc.AgentCreator(name="tool_user", tools=[multiply_tool], description="Can use multiply tool to multiply two integers"),
+    ostc.AgentCreator(name="meeting_agent", tools=[create_meeting_tool], description="Can use create_meeting tool to schedule a meeting"),
+    ostc.AgentCreator(name="can_chat", tools=[chat_response_tool], description="Can use chat responses to respond to user prompts"),
 
-agent.create_agent()
-extra_agent.create_agent()
-meeting_agent.create_agent()
+]
 
-agents = [agent, meeting_agent, extra_agent]
+agents = [creator.create_agent() for creator in agent_creators]
 
 action_agents = ostc.AgentCreator.assign_agents(model, agents, actions)
-
 
 
 def invoke_and_run(llm, action_agents):
     results = []
     for action, agent in action_agents.items():
-        result = ostc.CallingFormat.generate_response(llm, agent.tools, actions)
-        result = json.loads(result)
-        function_name = result['tool']
-        arguments = result.get('tool_input', {})
-        results.append(functions[function_name](**arguments))
+        result = ostc.CallingFormat.generate_response(llm, agent.tools, action)
+        if isinstance(result, str):
+            print(f"Error: {result}")
+            continue
+        for res in result:
+            function_name = res['tool']
+            arguments = res.get('tool_input', {})
+            if function_name in functions:
+                results.append(functions[function_name](**arguments))
+            else:
+                print(f"Error: Unknown function '{function_name}'")
     return results
-
 
 result = invoke_and_run(model, action_agents)
